@@ -397,11 +397,8 @@ elif page == "MCQ Quiz":
                     "subject": subject,
                     "questions": questions
                 }
-            except Exception:
-                st.error(
-                    "Could not generate the quiz. Check your API key/model "
-                    "or try a simpler topic."
-                )
+            except Exception as e:
+                st.error(f"Could not generate quiz: {e}")
 
     quiz = st.session_state.quiz
     if quiz:
@@ -420,13 +417,16 @@ elif page == "MCQ Quiz":
 
             submitted = st.form_submit_button("Submit Quiz")
 
+        
         if submitted:
-            score = sum(
-                answer == q["answer"]
-                for answer, q in zip(answers, quiz["questions"])
-                if answer is not None
-            )
-            total = len(quiz["questions"])
+            if any(answer is None for answer in answers):
+                st.warning("Please answer every question before submitting.")
+            else:
+                score = sum(
+                    answer == q["answer"]
+                    for answer, q in zip(answers, quiz["questions"])
+                )
+                total = len(quiz["questions"])
 
             try:
                 query(
@@ -441,8 +441,8 @@ elif page == "MCQ Quiz":
                         f"Q{i + 1}: Correct answer — "
                         f"{q['options'][q['answer']]}"
                     )
-            except Exception:
-                st.error("Score could not be saved. Please try again.")
+            except Exception as e:
+                st.error(f"Score could not be saved: {e}")
 
 
 elif page == "Quiz History":
