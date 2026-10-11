@@ -1,5 +1,5 @@
 import streamlit as st
-import mysql.connector
+import sqlite3
 import bcrypt
 import pymupdf
 import json
@@ -9,30 +9,69 @@ from google import genai
 st.set_page_config(page_title="ExamPrep AI", page_icon="📚")
 st.title("📚 ExamPrep AI")
 
-DB = st.secrets["mysql"]
 AI = st.secrets["gemini"]
+DB_PATH = "examprep.db"
 
 
-# ---------- DATABASE ----------
+# ---------- DATABASE (SQLite) ----------
 def connect():
-    return mysql.connector.connect(
-        host=DB["host"],
-        port=int(DB["port"]),
-        user=DB["user"],
-        password=DB["password"],
-        database=DB["database"]
-    )
+    con = sqlite3.connect(DB_PATH, timeout=30)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA foreign_keys = ON")
+    return con
+
+
+def init_db():
+    con = connect()
+    con.executescript("""
+        CREATE TABLE IF NOT EXISTS students (
+            student_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS chats (
+            chat_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id INTEGER NOT NULL,
+            title TEXT NOT NULL DEFAULT 'New Chat',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS messages (
+            message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS quiz_results (
+            result_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id INTEGER NOT NULL,
+            subject TEXT NOT NULL,
+            score INTEGER NOT NULL,
+            total INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE
+        );
+    """)
+    con.commit()
+    con.close()
 
 
 def query(sql, values=(), fetch=False):
     con = connect()
-    cur = con.cursor(dictionary=True)
-    cur.execute(sql, values)
-    result = cur.fetchall() if fetch else None
-    con.commit()
-    cur.close()
-    con.close()
-    return result
+    try:
+        cur = con.execute(sql, values)
+        result = [dict(row) for row in cur.fetchall()] if fetch else None
+        con.commit()
+        return result
+    finally:
+        con.close()
+
+
+init_db()
 
 
 # ---------- AUTHENTICATION ----------
@@ -40,17 +79,17 @@ def register(name, email, password):
     hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
     try:
         query(
-            "INSERT INTO students (name,email,password_hash) VALUES (%s,%s,%s)",
+            "INSERT INTO students (name,email,password_hash) VALUES (?,?,?)",
             (name, email, hashed)
         )
         return True
-    except mysql.connector.IntegrityError:
+    except sqlite3.IntegrityError:
         return False
 
 
 def login(email, password):
     users = query(
-        "SELECT * FROM students WHERE email=%s", (email,), fetch=True
+        "SELECT * FROM students WHERE email=?", (email,), fetch=True
     )
     return users[0] if users and bcrypt.checkpw(
         password.encode(), users[0]["password_hash"].encode()
@@ -69,10 +108,10 @@ def ask_ai(prompt):
 
 # ---------- CHAT FUNCTIONS ----------
 def new_chat(student_id):
-    query("INSERT INTO chats (student_id,title) VALUES (%s,%s)",
+    query("INSERT INTO chats (student_id,title) VALUES (?,?)",
           (student_id, "New Chat"))
     rows = query(
-        "SELECT chat_id FROM chats WHERE student_id=%s "
+        "SELECT chat_id FROM chats WHERE student_id=? "
         "ORDER BY chat_id DESC LIMIT 1",
         (student_id,), fetch=True
     )
@@ -81,7 +120,7 @@ def new_chat(student_id):
 
 def get_chats(student_id):
     return query(
-        "SELECT * FROM chats WHERE student_id=%s ORDER BY updated_at DESC",
+        "SELECT * FROM chats WHERE student_id=? ORDER BY updated_at DESC",
         (student_id,), fetch=True
     )
 
@@ -90,7 +129,7 @@ def get_messages(chat_id, student_id):
     return query(
         """SELECT m.role,m.content FROM messages m
            JOIN chats c ON m.chat_id=c.chat_id
-           WHERE c.chat_id=%s AND c.student_id=%s
+           WHERE c.chat_id=? AND c.student_id=?
            ORDER BY m.message_id""",
         (chat_id, student_id), fetch=True
     )
@@ -98,13 +137,14 @@ def get_messages(chat_id, student_id):
 
 def save_message(chat_id, role, content):
     query(
-        "INSERT INTO messages (chat_id,role,content) VALUES (%s,%s,%s)",
+        "INSERT INTO messages (chat_id,role,content) VALUES (?,?,?)",
         (chat_id, role, content)
     )
+    query("UPDATE chats SET updated_at=CURRENT_TIMESTAMP WHERE chat_id=?", (chat_id,))
 
 
 def delete_chat(chat_id, student_id):
-    query("DELETE FROM chats WHERE chat_id=%s AND student_id=%s",
+    query("DELETE FROM chats WHERE chat_id=? AND student_id=?",
           (chat_id, student_id))
 
 
@@ -330,8 +370,8 @@ QUESTION: {question}
 
                 # Give the chat a title based on its first question.
                 query(
-                    """UPDATE chats SET title=%s
-                       WHERE chat_id=%s AND student_id=%s
+                    """UPDATE chats SET title=?
+                       WHERE chat_id=? AND student_id=?
                        AND title='New Chat'""",
                     (question[:60], chat_id, student_id)
                 )
@@ -392,7 +432,7 @@ elif page == "MCQ Quiz":
                 query(
                     """INSERT INTO quiz_results
                        (student_id,subject,score,total)
-                       VALUES (%s,%s,%s,%s)""",
+                       VALUES (?,?,?,?)""",
                     (student_id, quiz["subject"], score, total)
                 )
                 st.success(f"Your score: {score}/{total}")
@@ -409,7 +449,7 @@ elif page == "Quiz History":
     st.subheader("Your Quiz History")
     results = query(
         """SELECT subject,score,total,created_at
-           FROM quiz_results WHERE student_id=%s
+           FROM quiz_results WHERE student_id=?
            ORDER BY created_at DESC""",
         (student_id,), fetch=True
     )
