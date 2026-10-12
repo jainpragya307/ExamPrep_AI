@@ -353,10 +353,8 @@ elif page == "Ask from PDFs":
             context = "\n".join(st.session_state.documents)
             prompt = f"""
 You are ExamPrep AI, a helpful study assistant.
-Answer using the provided study material.
-Write an answer suitable for {marks} marks.
-Make it clear, accurate, and easy for a student to learn.
-If the answer is not in the material, say so.
+Answer the student's question using the uploaded study material as the primary source. If the material contains the question but does not contain its answer or explanation, use your own general knowledge to provide a correct, clear, and helpful answer. Do not say that an answer is unavailable merely because it is missing from the uploaded material. Clearly distinguish information taken from the uploaded material from additional explanations based on general knowledge. Follow the student's requested answer length according to the marks selected (2, 4, 7, or 10 marks). Use simple, student-friendly language suitable for exam preparation.
+
 
 STUDY MATERIAL:
 {context[:50000]}
